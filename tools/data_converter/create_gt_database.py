@@ -2,7 +2,10 @@
 import mmcv
 import numpy as np
 import pickle
-from mmcv import track_iter_progress
+try:
+    from mmcv import track_iter_progress
+except ImportError:
+    from mmengine.utils import track_iter_progress
 from mmcv.ops import roi_align
 from os import path as osp
 from pycocotools import mask as maskUtils

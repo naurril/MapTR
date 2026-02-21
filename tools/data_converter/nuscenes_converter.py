@@ -6,6 +6,22 @@
 import mmcv
 import numpy as np
 import os
+
+# mmcv 2.x compat: restore removed APIs
+if not hasattr(mmcv, 'is_filepath'):
+    import pathlib
+    mmcv.is_filepath = lambda x: isinstance(x, (str, pathlib.Path))
+if not hasattr(mmcv, 'check_file_exist'):
+    mmcv.check_file_exist = lambda f: (_ for _ in ()).throw(FileNotFoundError(f)) if not os.path.isfile(f) else None
+if not hasattr(mmcv, 'track_iter_progress'):
+    from mmengine.utils import track_iter_progress as _tip
+    mmcv.track_iter_progress = _tip
+if not hasattr(mmcv, 'dump'):
+    from mmengine.fileio import dump as _dump
+    mmcv.dump = _dump
+if not hasattr(mmcv, 'load'):
+    from mmengine.fileio import load as _load
+    mmcv.load = _load
 from collections import OrderedDict
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.geometry_utils import view_points
@@ -14,8 +30,30 @@ from pyquaternion import Quaternion
 from shapely.geometry import MultiPoint, box
 from typing import List, Tuple, Union
 
-from mmdet3d.core.bbox.box_np_ops import points_cam2img
+try:
+    from mmdet3d.core.bbox.box_np_ops import points_cam2img
+except (ImportError, ModuleNotFoundError):
+    from mmdet3d.structures.ops.box_np_ops import points_cam2img
 from mmdet3d.datasets import NuScenesDataset
+
+# mmdet3d v2 removed NameMapping as a class attribute; restore it if missing
+if not hasattr(NuScenesDataset, 'NameMapping'):
+    NuScenesDataset.NameMapping = {
+        'movable_object.barrier': 'barrier',
+        'vehicle.bicycle': 'bicycle',
+        'vehicle.bus.bendy': 'bus',
+        'vehicle.bus.rigid': 'bus',
+        'vehicle.car': 'car',
+        'vehicle.construction': 'construction_vehicle',
+        'vehicle.motorcycle': 'motorcycle',
+        'human.pedestrian.adult': 'pedestrian',
+        'human.pedestrian.child': 'pedestrian',
+        'human.pedestrian.construction_worker': 'pedestrian',
+        'human.pedestrian.police_officer': 'pedestrian',
+        'movable_object.trafficcone': 'traffic_cone',
+        'vehicle.trailer': 'trailer',
+        'vehicle.truck': 'truck',
+    }
 
 nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
                   'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',

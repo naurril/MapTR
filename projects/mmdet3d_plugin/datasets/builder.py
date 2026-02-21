@@ -11,7 +11,10 @@ from mmcv.runner import get_dist_info
 from mmcv.utils import Registry, build_from_cfg
 from torch.utils.data import DataLoader
 
-from mmdet.datasets.samplers import GroupSampler
+try:
+    from mmdet.datasets.samplers import GroupSampler
+except ImportError:
+    from torch.utils.data import RandomSampler as GroupSampler
 from projects.mmdet3d_plugin.datasets.samplers.group_sampler import DistributedGroupSampler
 from projects.mmdet3d_plugin.datasets.samplers.distributed_sampler import DistributedSampler
 from projects.mmdet3d_plugin.datasets.samplers.sampler import build_sampler
@@ -106,7 +109,18 @@ import platform
 from mmcv.utils import Registry, build_from_cfg
 
 from mmdet.datasets import DATASETS
-from mmdet.datasets.builder import _concat_dataset
+try:
+    from mmdet.datasets.builder import _concat_dataset
+except ImportError:
+    def _concat_dataset(cfg, default_args=None):
+        from mmdet.datasets.dataset_wrappers import ConcatDataset
+        ann_files = cfg['ann_file'] if isinstance(cfg['ann_file'], (list, tuple)) else [cfg['ann_file']]
+        datasets = []
+        for ann in ann_files:
+            c = cfg.copy()
+            c['ann_file'] = ann
+            datasets.append(build_from_cfg(c, DATASETS, default_args))
+        return ConcatDataset(datasets)
 
 if platform.system() != 'Windows':
     # https://github.com/pytorch/pytorch/issues/973

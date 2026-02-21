@@ -92,11 +92,14 @@ class MapTRHead(DETRHead):
 
         self.with_box_refine = with_box_refine
         self.as_two_stage = as_two_stage
-        self.bev_encoder_type = transformer.encoder.type
+        if isinstance(transformer, dict):
+            self.bev_encoder_type = transformer['encoder']['type']
+        else:
+            self.bev_encoder_type = transformer.encoder.type
         if self.as_two_stage:
             transformer['as_two_stage'] = self.as_two_stage
         if 'code_size' in kwargs:
-            self.code_size = kwargs['code_size']
+            self.code_size = kwargs.pop('code_size')
         else:
             self.code_size = 10
         if code_weights is not None:
@@ -110,7 +113,7 @@ class MapTRHead(DETRHead):
         self.real_w = self.pc_range[3] - self.pc_range[0]
         self.real_h = self.pc_range[4] - self.pc_range[1]
         self.num_cls_fcs = num_cls_fcs - 1
-        
+
 
         self.query_embed_type = query_embed_type
         self.transform_method = transform_method
@@ -121,10 +124,50 @@ class MapTRHead(DETRHead):
         self.num_pts_per_vec = num_pts_per_vec
         self.num_pts_per_gt_vec = num_pts_per_gt_vec
         self.dir_interval = dir_interval
-        
-        
+
+        # ── v1→v2 compat: build transformer & positional_encoding here ──
+        # v1 DETRHead accepted these kwargs and built them internally;
+        # v2 DETRHead does not accept them.
+        positional_encoding = kwargs.pop('positional_encoding', None)
+        kwargs.pop('in_channels', None)
+        kwargs.pop('num_query', None)
+
+        # Build transformer and positional encoding before super().__init__().
+        # We need embed_dims for the super() call, and _init_layers() (called
+        # inside super().__init__()) needs self.transformer to be available.
+        # Strategy: use object.__setattr__ to store the transformer in __dict__
+        # directly (bypassing PyTorch's __setattr__ check that requires _modules
+        # to be initialized). After super().__init__() runs, re-assign normally
+        # so PyTorch registers it in _modules.
+        from mmdet3d.registry import MODELS as _MODELS
+        _transformer = _MODELS.build(transformer)
+        _positional_encoding = None
+        if positional_encoding is not None:
+            from mmcv.cnn.bricks.transformer import build_positional_encoding
+            _positional_encoding = build_positional_encoding(positional_encoding)
+
+        # v2 DETRHead needs embed_dims as explicit kwarg
+        kwargs.setdefault('embed_dims', _transformer.embed_dims)
+
+        # Stash in plain __dict__ so _init_layers() (called from super) can read it.
+        # nn.Module.__init__() (called inside super().__init__()) will set up _modules
+        # but won't touch transformer in __dict__.
+        object.__setattr__(self, 'transformer', _transformer)
+        if _positional_encoding is not None:
+            object.__setattr__(self, 'positional_encoding', _positional_encoding)
+
         super(MapTRHead, self).__init__(
-            *args, transformer=transformer, **kwargs)
+            *args, **kwargs)
+
+        # Now properly register as nn.Module sub-modules (moves from __dict__ to _modules)
+        self.transformer = _transformer
+        if _positional_encoding is not None:
+            self.positional_encoding = _positional_encoding
+
+        # v1 DETRHead built a PseudoSampler; v2 doesn't
+        from mmengine.registry import TASK_UTILS
+        self.sampler = TASK_UTILS.build(dict(type='PseudoSampler'))
+
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
         self.loss_pts = build_loss(loss_pts)

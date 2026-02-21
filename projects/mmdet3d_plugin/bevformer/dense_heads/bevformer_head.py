@@ -60,7 +60,7 @@ class BEVFormerHead(DETRHead):
         if self.as_two_stage:
             transformer['as_two_stage'] = self.as_two_stage
         if 'code_size' in kwargs:
-            self.code_size = kwargs['code_size']
+            self.code_size = kwargs.pop('code_size')
         else:
             self.code_size = 10
         if code_weights is not None:
@@ -74,8 +74,27 @@ class BEVFormerHead(DETRHead):
         self.real_w = self.pc_range[3] - self.pc_range[0]
         self.real_h = self.pc_range[4] - self.pc_range[1]
         self.num_cls_fcs = num_cls_fcs - 1
+
+        # ── v1→v2 compat: build transformer & positional_encoding here ──
+        positional_encoding = kwargs.pop('positional_encoding', None)
+        kwargs.pop('in_channels', None)
+        self.num_query = kwargs.pop('num_query', 100)
+
+        from mmengine.registry import MODELS as _MODELS
+        self.transformer = _MODELS.build(transformer)
+        if positional_encoding is not None:
+            self.positional_encoding = build_positional_encoding(
+                positional_encoding)
+
+        kwargs.setdefault('embed_dims', self.transformer.embed_dims)
+
         super(BEVFormerHead, self).__init__(
-            *args, transformer=transformer, **kwargs)
+            *args, **kwargs)
+
+        # v1 DETRHead built a PseudoSampler; v2 doesn't
+        from mmengine.registry import TASK_UTILS
+        self.sampler = TASK_UTILS.build(dict(type='PseudoSampler'))
+
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
 

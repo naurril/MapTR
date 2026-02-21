@@ -39,7 +39,7 @@ def make_cuda_ext(name,
                   extra_include_path=[]):
 
     define_macros = []
-    extra_compile_args = {'cxx': [] + extra_args}
+    extra_compile_args = {'cxx': ['-std=c++17'] + extra_args}
 
     if torch.cuda.is_available() or os.getenv('FORCE_CUDA', '0') == '1':
         define_macros += [('WITH_CUDA', None)]
@@ -48,6 +48,7 @@ def make_cuda_ext(name,
             '-D__CUDA_NO_HALF_OPERATORS__',
             '-D__CUDA_NO_HALF_CONVERSIONS__',
             '-D__CUDA_NO_HALF2_OPERATORS__',
+            '-std=c++17',
         ]
         sources += sources_cuda
     else:
@@ -241,7 +242,7 @@ if __name__ == '__main__':
                     'src/maxpool.cc',
                     'src/maxpool_cuda.cu',
                 ],
-                extra_args=['-w', '-std=c++14']),
+                extra_args=['-w', '-std=c++17']),
             make_cuda_ext(
                 name='iou3d_cuda',
                 module='mmdet3d.ops.iou3d',

@@ -1,3 +1,7 @@
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+import projects.mmdet3d_plugin.compat  # noqa: F401  install v1->v2 shims
+
 import argparse
 import mmcv
 import os
@@ -226,7 +230,7 @@ def main():
         gt_bboxes_3d = data['gt_bboxes_3d'].data[0]
         gt_labels_3d = data['gt_labels_3d'].data[0]
 
-        pts_filename = img_metas[0]['pts_filename']
+        pts_filename = img_metas['pts_filename']
         pts_filename = osp.basename(pts_filename)
         pts_filename = pts_filename.replace('__LIDAR_TOP__', '_').split('.')[0]
         # import pdb;pdb.set_trace()
@@ -238,7 +242,7 @@ def main():
         sample_dir = osp.join(args.show_dir, pts_filename)
         mmcv.mkdir_or_exist(osp.abspath(sample_dir))
 
-        filename_list = img_metas[0]['filename']
+        filename_list = img_metas['filename']
         img_path_dict = {}
         # save cam img for sample
         for filepath in filename_list:

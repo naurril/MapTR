@@ -33,7 +33,8 @@ class CustomDefaultFormatBundle3D(DefaultFormatBundle3D):
         """
         # Format 3D data
         results = super(CustomDefaultFormatBundle3D, self).__call__(results)
-        results['gt_map_masks'] = DC(
-            to_tensor(results['gt_map_masks']), stack=True)
+        if 'gt_map_masks' in results:
+            results['gt_map_masks'] = DC(
+                to_tensor(results['gt_map_masks']), stack=True)
 
         return results

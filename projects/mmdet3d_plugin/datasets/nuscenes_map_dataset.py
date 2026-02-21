@@ -904,18 +904,19 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
     """
     MAPCLASSES = ('divider',)
     def __init__(self,
-                 map_ann_file=None, 
-                 queue_length=4, 
-                 bev_size=(200, 200), 
+                 map_ann_file=None,
+                 queue_length=4,
+                 bev_size=(200, 200),
                  pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0],
-                 overlap_test=False, 
+                 overlap_test=False,
                  fixed_ptsnum_per_line=-1,
                  eval_use_same_gt_sample_num_flag=False,
                  padding_value=-10000,
                  map_classes=None,
                  noise='None',
                  noise_std=0,
-                 *args, 
+                 is_vis_on_test=False,
+                 *args,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.map_ann_file = map_ann_file
@@ -933,11 +934,17 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
         self.padding_value = padding_value
         self.fixed_num = fixed_ptsnum_per_line
         self.eval_use_same_gt_sample_num_flag = eval_use_same_gt_sample_num_flag
-        self.vector_map = VectorizedLocalMap(kwargs['data_root'], 
-                            patch_size=self.patch_size, map_classes=self.MAPCLASSES, 
-                            fixed_ptsnum_per_line=fixed_ptsnum_per_line,
-                            padding_value=self.padding_value)
-        self.is_vis_on_test = False
+        # Only build the nuScenes vector map when GT is needed.
+        # Skip it in pure-inference test mode (avoids requiring nuScenes map
+        # files for non-nuScenes datasets like PandaSet).
+        if is_vis_on_test or not self.test_mode:
+            self.vector_map = VectorizedLocalMap(self.data_root,
+                                patch_size=self.patch_size, map_classes=self.MAPCLASSES,
+                                fixed_ptsnum_per_line=fixed_ptsnum_per_line,
+                                padding_value=self.padding_value)
+        else:
+            self.vector_map = None
+        self.is_vis_on_test = is_vis_on_test
         self.noise = noise
         self.noise_std = noise_std
     @classmethod
@@ -1212,8 +1219,22 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
         input_dict = self.get_data_info(index)
         self.pre_pipeline(input_dict)
         example = self.pipeline(input_dict)
+        # mmdet3d v2: MultiScaleFlipAug3D returns List[dict]; unwrap single-element list
+        if isinstance(example, list):
+            example = example[0]
         if self.is_vis_on_test:
             example = self.vectormap_pipeline(example, input_dict)
+            # Wrap gt values in a batch list so vis_pred.py can do data[0] -> batch_item
+            for gt_key in ('gt_bboxes_3d', 'gt_labels_3d'):
+                if gt_key in example:
+                    dc = example[gt_key]
+                    example[gt_key] = DC([dc.data], cpu_only=dc.cpu_only)
+        # Wrap img and img_metas in a list to match old multi-scale API:
+        # model.forward_test expects img[scale] and img_metas[scale][batch]
+        if 'img' in example and not isinstance(example['img'], list):
+            example['img'] = [example['img']]
+        if 'img_metas' in example and not isinstance(example['img_metas'], list):
+            example['img_metas'] = [example['img_metas']]
         return example
 
     def __getitem__(self, idx):
