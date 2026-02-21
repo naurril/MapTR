@@ -74,8 +74,9 @@ def parse_args():
                    help='Chamfer-distance threshold for NMS / DBSCAN eps (metres)')
     p.add_argument('--method', default='greedy_nms', choices=sorted(METHODS),
                    help='combination method (default: greedy_nms)')
-    p.add_argument('--n-pts', default=40, type=int,
-                   help='output points per polyline for growing_merge (default: 40)')
+    p.add_argument('--n-pts', default=None, type=int,
+                   help='output points per polyline for growing_merge '
+                        '(default: auto — preserves original inter-point spacing)')
     p.add_argument('--out', default=None,
                    help='output PNG path '
                         '(default: work_dirs/maptr_tiny_r50_pandaset/global_map.png)')

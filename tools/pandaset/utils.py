@@ -289,6 +289,15 @@ def growing_merge(candidates, nms_dist, n_out=None):
         all_w     = np.array(all_w)
 
         arc_min, arc_max = all_arc.min(), all_arc.max()
+
+        # Auto n_out: keep the same inter-point spacing as the reference,
+        # so longer merged elements get proportionally more points.
+        if n_out is not None:
+            k = n_out
+        else:
+            spacing = arc[-1] / max(P - 1, 1)
+            k = max(P, int(round((arc_max - arc_min) / spacing)) + 1)
+
         sigma = (arc_max - arc_min) / max(k - 1, 1) * 1.5
 
         new_pts = []
