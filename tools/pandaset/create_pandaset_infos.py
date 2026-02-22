@@ -15,12 +15,15 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation as Rscipy
 
-# Map PandaSet camera folder names to nuScenes-style CAM keys
-# Order matches the nuScenes camera order expected by the model
+# Map PandaSet camera folder names to nuScenes-style CAM keys.
+# Order MUST match nuScenes camera order so the model's learned cams_embeds
+# (one per slot index) are applied to the geometrically correct camera.
+# nuScenes order: FRONT(0), FRONT_RIGHT(1), FRONT_LEFT(2), BACK(3),
+#                 BACK_LEFT(4), BACK_RIGHT(5)
 PANDASET_CAM_MAP = {
     'front_camera':       'CAM_FRONT',
-    'front_left_camera':  'CAM_FRONT_LEFT',
-    'front_right_camera': 'CAM_FRONT_RIGHT',
+    'front_right_camera': 'CAM_FRONT_RIGHT',  # slot 1 — matches nuScenes slot 1
+    'front_left_camera':  'CAM_FRONT_LEFT',   # slot 2 — matches nuScenes slot 2
     'back_camera':        'CAM_BACK',
     'left_camera':        'CAM_BACK_LEFT',
     'right_camera':       'CAM_BACK_RIGHT',
