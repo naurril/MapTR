@@ -43,8 +43,10 @@ def parse_args():
     p.add_argument('config')
     p.add_argument('checkpoint')
     p.add_argument('--pred-dir', default=None,
-                   help='output directory for .npz files '
+                   help='output directory for frame JSON files '
                         '(default: work_dirs/<cfg>/preds/)')
+    p.add_argument('--ann-file', default=None,
+                   help='override cfg.data.test.ann_file (e.g. per-sequence pkl)')
     return p.parse_args()
 
 
@@ -64,6 +66,8 @@ def main():
         importlib.import_module(cfg.plugin_dir.replace('/', '.').rstrip('.'))
 
     cfg.model.pretrained = None
+    if args.ann_file:
+        cfg.data.test.ann_file = args.ann_file
     if isinstance(cfg.data.test, dict):
         cfg.data.test.test_mode = True
         samples_per_gpu = cfg.data.test.pop('samples_per_gpu', 1)
@@ -112,6 +116,8 @@ def main():
             'pts_local':    pts_local.tolist(),
             'filenames':    list(filenames),
             'pc_range':     pc_range,
+            'scene_token':  img_metas.get('scene_token', ''),
+            'lidar_path':   img_metas.get('lidar_path', ''),
         }
         with open(osp.join(args.pred_dir, f'frame_{frame_idx:04d}.json'), 'w') as f:
             json.dump(record, f)

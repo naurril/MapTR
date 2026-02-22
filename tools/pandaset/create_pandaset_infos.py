@@ -142,6 +142,8 @@ def main():
     parser.add_argument('--data-root', default='data/pandaset')
     parser.add_argument('--sequences', nargs='+', default=['008'])
     parser.add_argument('--out-dir', default='data/pandaset')
+    parser.add_argument('--out', default=None,
+                        help='explicit output pkl path (overrides --out-dir default)')
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -152,7 +154,11 @@ def main():
         all_infos.extend(infos)
         print(f'  → {len(infos)} frames')
 
-    out_path = Path(args.out_dir) / 'pandaset_map_infos_test.pkl'
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        out_path = Path(args.out_dir) / 'pandaset_map_infos_test.pkl'
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, 'wb') as f:
         pickle.dump({'infos': all_infos, 'metadata': {'version': 'pandaset'}}, f)
     print(f'Saved {len(all_infos)} frames to {out_path}')

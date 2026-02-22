@@ -219,7 +219,7 @@ def dbscan_weighted_merge(candidates, nms_dist):
     return merged
 
 
-def growing_merge(candidates, nms_dist, n_out=None):
+def growing_merge(candidates, nms_dist, n_out=None, cluster_dist=None):
     """
     DBSCAN cluster + arc-length growing merge.
 
@@ -234,9 +234,12 @@ def growing_merge(candidates, nms_dist, n_out=None):
     Closed polygons (e.g. ped_crossing, detected by first≈last point) fall
     back to the score-weighted average, which preserves their 2-D shape.
 
-    candidates : list of (score, pts_world)  where pts_world is (P, 2)
-    nms_dist   : DBSCAN eps (metres)
-    n_out      : output points per polyline (default: same as input P)
+    candidates   : list of (score, pts_world)  where pts_world is (P, 2)
+    nms_dist     : kept for API compatibility; used as cluster_dist fallback
+    cluster_dist : DBSCAN eps (metres).  Should be tighter than nms_dist to
+                   avoid merging distinct parallel elements (e.g. lane dividers
+                   ~3 m apart).  Defaults to nms_dist / 2.
+    n_out        : output points per polyline (default: same as input P)
     Returns one (score, pts) per cluster.
     """
     from sklearn.cluster import DBSCAN
@@ -245,9 +248,10 @@ def growing_merge(candidates, nms_dist, n_out=None):
     if len(candidates) == 1:
         return list(candidates)
 
+    eps      = cluster_dist if cluster_dist is not None else nms_dist / 2
     pts_list = [pts for _, pts in candidates]
     D        = _pairwise_chamfer(pts_list)
-    labels   = DBSCAN(eps=nms_dist, min_samples=1, metric='precomputed').fit_predict(D)
+    labels   = DBSCAN(eps=eps, min_samples=1, metric='precomputed').fit_predict(D)
 
     clusters = {}
     for idx, lbl in enumerate(labels):
@@ -288,7 +292,24 @@ def growing_merge(candidates, nms_dist, n_out=None):
         all_cross = np.array(all_cross)
         all_w     = np.array(all_w)
 
-        arc_min, arc_max = all_arc.min(), all_arc.max()
+        # Score-weighted arc extent: only grow as far as positions where
+        # accumulated score weight (Gaussian kernel sum) exceeds a threshold.
+        # This prevents low-confidence outliers from spuriously extending ends.
+        raw_min, raw_max = all_arc.min(), all_arc.max()
+        probe_sigma = (arc[-1] / max(P - 1, 1)) * 1.5
+        weight_thresh = all_w.max() * 0.05   # 5% of peak score
+        n_probe = max(P * 4, 200)
+        probe_s = np.linspace(raw_min, raw_max, n_probe)
+        weight_at = np.array([
+            (np.exp(-0.5 * ((all_arc - s) / probe_sigma) ** 2) * all_w).sum()
+            for s in probe_s
+        ])
+        valid = weight_at >= weight_thresh
+        if valid.any():
+            arc_min = probe_s[valid][0]
+            arc_max = probe_s[valid][-1]
+        else:
+            arc_min, arc_max = raw_min, raw_max
 
         # Auto n_out: keep the same inter-point spacing as the reference,
         # so longer merged elements get proportionally more points.

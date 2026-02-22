@@ -72,8 +72,11 @@ def parse_args():
                    help='confidence threshold (applied before combination)')
     p.add_argument('--nms-dist', default=3.0, type=float,
                    help='Chamfer-distance threshold for NMS / DBSCAN eps (metres)')
-    p.add_argument('--method', default='greedy_nms', choices=sorted(METHODS),
+    p.add_argument('--method', default='growing_merge', choices=sorted(METHODS),
                    help='combination method (default: greedy_nms)')
+    p.add_argument('--cluster-dist', default=None, type=float,
+                   help='DBSCAN eps for growing_merge clustering (default: nms-dist/2). '
+                        'Keep tighter than nms-dist to avoid merging parallel elements.')
     p.add_argument('--n-pts', default=None, type=int,
                    help='output points per polyline for growing_merge '
                         '(default: auto — preserves original inter-point spacing)')
@@ -94,7 +97,8 @@ def main():
     import functools
     combine_fn = METHODS[args.method]
     if args.method == 'growing_merge':
-        combine_fn = functools.partial(combine_fn, n_out=args.n_pts)
+        combine_fn = functools.partial(combine_fn, n_out=args.n_pts,
+                                       cluster_dist=args.cluster_dist)
     logger.info(f'Method: {args.method}')
     logger.info(f'Reading from: {args.pred_dir}')
 
@@ -153,6 +157,27 @@ def main():
         naive_out,
     )
     logger.info(f'Saved → {naive_out}')
+
+    # ── save combined map as JSON ──────────────────────────────────────────
+    json_out = osp.splitext(args.out)[0] + '.json'
+    map_data = {
+        'method':       args.method,
+        'score_thresh': args.score_thresh,
+        'nms_dist':     args.nms_dist,
+        'trajectory':   traj.tolist(),
+        'elements': [
+            {
+                'class':     CLASS_NAMES[cls_idx],
+                'class_idx': cls_idx,
+                'score':     float(score),
+                'pts':       pts.tolist(),
+            }
+            for cls_idx, score, pts in final
+        ],
+    }
+    with open(json_out, 'w') as f:
+        json.dump(map_data, f, indent=2)
+    logger.info(f'Saved → {json_out}')
 
 
 if __name__ == '__main__':
