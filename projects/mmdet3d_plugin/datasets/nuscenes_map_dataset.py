@@ -904,18 +904,19 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
     """
     MAPCLASSES = ('divider',)
     def __init__(self,
-                 map_ann_file=None, 
-                 queue_length=4, 
-                 bev_size=(200, 200), 
+                 map_ann_file=None,
+                 queue_length=4,
+                 bev_size=(200, 200),
                  pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0],
-                 overlap_test=False, 
+                 overlap_test=False,
                  fixed_ptsnum_per_line=-1,
                  eval_use_same_gt_sample_num_flag=False,
                  padding_value=-10000,
                  map_classes=None,
                  noise='None',
                  noise_std=0,
-                 *args, 
+                 is_vis_on_test=False,
+                 *args,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.map_ann_file = map_ann_file
@@ -933,11 +934,17 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
         self.padding_value = padding_value
         self.fixed_num = fixed_ptsnum_per_line
         self.eval_use_same_gt_sample_num_flag = eval_use_same_gt_sample_num_flag
-        self.vector_map = VectorizedLocalMap(kwargs['data_root'], 
-                            patch_size=self.patch_size, map_classes=self.MAPCLASSES, 
-                            fixed_ptsnum_per_line=fixed_ptsnum_per_line,
-                            padding_value=self.padding_value)
-        self.is_vis_on_test = False
+        # Only build the nuScenes vector map when GT is needed.
+        # Skip it in pure-inference test mode (avoids requiring nuScenes map
+        # files for non-nuScenes datasets like PandaSet).
+        if is_vis_on_test or not self.test_mode:
+            self.vector_map = VectorizedLocalMap(self.data_root,
+                                patch_size=self.patch_size, map_classes=self.MAPCLASSES,
+                                fixed_ptsnum_per_line=fixed_ptsnum_per_line,
+                                padding_value=self.padding_value)
+        else:
+            self.vector_map = None
+        self.is_vis_on_test = is_vis_on_test
         self.noise = noise
         self.noise_std = noise_std
     @classmethod
@@ -1023,41 +1030,26 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
         Returns:
             dict: Training data dict of the corresponding index.
         """
-        data_queue = []
+        queue = []
 
-        # temporal aug
-        prev_indexs_list = list(range(index-self.queue_length, index))
-        random.shuffle(prev_indexs_list)
-        prev_indexs_list = sorted(prev_indexs_list[1:], reverse=True)
-        ##
+        index_list = list(range(index-self.queue_length, index))
+        random.shuffle(index_list)
+        index_list = sorted(index_list[1:])
+        index_list.append(index)
 
-        input_dict = self.get_data_info(index)
-        if input_dict is None:
-            return None
-        frame_idx = input_dict['frame_idx']
-        scene_token = input_dict['scene_token']
-        self.pre_pipeline(input_dict)
-        example = self.pipeline(input_dict)
-        example = self.vectormap_pipeline(example,input_dict)
-        if self.filter_empty_gt and \
-                (example is None or ~(example['gt_labels_3d']._data != -1).any()):
-            return None
-        data_queue.insert(0, example)
-        for i in prev_indexs_list:
+        for i in index_list:
             i = max(0, i)
             input_dict = self.get_data_info(i)
             if input_dict is None:
                 return None
-            if input_dict['frame_idx'] < frame_idx and input_dict['scene_token'] == scene_token:
-                self.pre_pipeline(input_dict)
-                example = self.pipeline(input_dict)
-                example = self.vectormap_pipeline(example,input_dict)
-                if self.filter_empty_gt and \
-                        (example is None or ~(example['gt_labels_3d']._data != -1).any()):
-                    return None
-                frame_idx = input_dict['frame_idx']
-            data_queue.insert(0, copy.deepcopy(example))
-        return self.union2one(data_queue)
+            self.pre_pipeline(input_dict)
+            example = self.pipeline(input_dict)
+            example = self.vectormap_pipeline(example,input_dict)
+            if self.filter_empty_gt and \
+                    (example is None or ~(example['gt_labels_3d']._data != -1).any()):
+                return None
+            queue.append(example)
+        return self.union2one(queue)
 
     def union2one(self, queue):
         """
@@ -1065,18 +1057,20 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
         """
         imgs_list = [each['img'].data for each in queue]
         metas_map = {}
+        prev_scene_token = None
         prev_pos = None
         prev_angle = None
         for i, each in enumerate(queue):
             metas_map[i] = each['img_metas'].data
-            if i == 0:
-                metas_map[i]['prev_bev'] = False
+            if metas_map[i]['scene_token'] != prev_scene_token:
+                metas_map[i]['prev_bev_exists'] = False
+                prev_scene_token = metas_map[i]['scene_token']
                 prev_pos = copy.deepcopy(metas_map[i]['can_bus'][:3])
                 prev_angle = copy.deepcopy(metas_map[i]['can_bus'][-1])
                 metas_map[i]['can_bus'][:3] = 0
                 metas_map[i]['can_bus'][-1] = 0
             else:
-                metas_map[i]['prev_bev'] = True
+                metas_map[i]['prev_bev_exists'] = True
                 tmp_pos = copy.deepcopy(metas_map[i]['can_bus'][:3])
                 tmp_angle = copy.deepcopy(metas_map[i]['can_bus'][-1])
                 metas_map[i]['can_bus'][:3] -= prev_pos
@@ -1225,8 +1219,22 @@ class CustomNuScenesLocalMapDataset(CustomNuScenesDataset):
         input_dict = self.get_data_info(index)
         self.pre_pipeline(input_dict)
         example = self.pipeline(input_dict)
+        # mmdet3d v2: MultiScaleFlipAug3D returns List[dict]; unwrap single-element list
+        if isinstance(example, list):
+            example = example[0]
         if self.is_vis_on_test:
             example = self.vectormap_pipeline(example, input_dict)
+            # Wrap gt values in a batch list so vis_pred.py can do data[0] -> batch_item
+            for gt_key in ('gt_bboxes_3d', 'gt_labels_3d'):
+                if gt_key in example:
+                    dc = example[gt_key]
+                    example[gt_key] = DC([dc.data], cpu_only=dc.cpu_only)
+        # Wrap img and img_metas in a list to match old multi-scale API:
+        # model.forward_test expects img[scale] and img_metas[scale][batch]
+        if 'img' in example and not isinstance(example['img'], list):
+            example['img'] = [example['img']]
+        if 'img_metas' in example and not isinstance(example['img_metas'], list):
+            example['img_metas'] = [example['img_metas']]
         return example
 
     def __getitem__(self, idx):

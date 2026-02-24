@@ -153,7 +153,7 @@ def model_scaling(layer_setting, arch_setting):
     return merge_layer_setting
 
 
-@BACKBONES.register_module()
+@BACKBONES.register_module(force=True)
 class EfficientNet(BaseModule):
     """EfficientNet backbone.
     Args:

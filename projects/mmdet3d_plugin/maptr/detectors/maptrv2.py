@@ -10,7 +10,7 @@ from mmcv.runner import force_fp32, auto_fp16
 from mmdet3d.ops import Voxelization, DynamicScatter
 from mmdet3d.models import builder
 from mmcv.utils import TORCH_VERSION, digit_version
-@DETECTORS.register_module()
+@DETECTORS.register_module(force=True)
 class MapTRv2(MVXTwoStageDetector):
     """MapTR.
     Args:
@@ -38,12 +38,19 @@ class MapTRv2(MVXTwoStageDetector):
                  lidar_encoder=None,
                  ):
 
-        super(MapTRv2,
-              self).__init__(pts_voxel_layer, pts_voxel_encoder,
-                             pts_middle_encoder, pts_fusion_layer,
-                             img_backbone, pts_backbone, img_neck, pts_neck,
-                             pts_bbox_head, img_roi_head, img_rpn_head,
-                             train_cfg, test_cfg, pretrained)
+        super(MapTRv2, self).__init__(
+            pts_voxel_encoder=pts_voxel_encoder,
+            pts_middle_encoder=pts_middle_encoder,
+            pts_fusion_layer=pts_fusion_layer,
+            img_backbone=img_backbone,
+            pts_backbone=pts_backbone,
+            img_neck=img_neck,
+            pts_neck=pts_neck,
+            pts_bbox_head=pts_bbox_head,
+            img_roi_head=img_roi_head,
+            img_rpn_head=img_rpn_head,
+            train_cfg=train_cfg,
+            test_cfg=test_cfg)
         self.grid_mask = GridMask(
             True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         self.use_grid_mask = use_grid_mask

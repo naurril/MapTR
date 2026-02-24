@@ -23,11 +23,44 @@ class CustomNuScenesDataset(NuScenesDataset):
     """
 
     def __init__(self, queue_length=4, bev_size=(200, 200), overlap_test=False, *args, **kwargs):
+        import os.path as osp
+        # mmdet3d v2 uses metainfo instead of classes
+        if 'classes' in kwargs and 'metainfo' not in kwargs:
+            kwargs['metainfo'] = dict(classes=kwargs.pop('classes'))
+        elif 'classes' in kwargs:
+            kwargs.pop('classes')
+        # modality is no longer a top-level kwarg in v2; save it for get_data_info
+        _modality = kwargs.pop('modality', None)
+        if _modality is None:
+            _modality = dict(use_camera=True, use_lidar=False, use_radar=False,
+                             use_map=False, use_external=False)
+        # v2 BaseDataset joins data_root+ann_file; config already has full path,
+        # so make ann_file absolute to prevent double-joining
+        if 'ann_file' in kwargs and not osp.isabs(kwargs['ann_file']):
+            kwargs['ann_file'] = osp.abspath(kwargs['ann_file'])
         super().__init__(*args, **kwargs)
+        self.modality = _modality
         self.queue_length = queue_length
         self.overlap_test = overlap_test
         self.bev_size = bev_size
-        
+
+    def pre_pipeline(self, results):
+        """Pre-pipeline: set img_prefix (removed in mmdet3d v2, was a no-op for camera-only)."""
+        results['img_prefix'] = None
+
+    def load_data_list(self):
+        """Load old-format pkl {infos, metadata} and expose as data_list."""
+        from mmengine.fileio import load
+        annotations = load(self.ann_file)
+        if isinstance(annotations, dict) and 'infos' in annotations:
+            # old MapTR pkl format
+            self.data_infos = annotations['infos']
+            if hasattr(self, '_metainfo'):
+                self._metainfo.update(annotations.get('metadata', {}))
+            return list(annotations['infos'])
+        # fallback: let parent handle new format
+        return super().load_data_list()
+
     def prepare_train_data(self, index):
         """
         Training data preparation.

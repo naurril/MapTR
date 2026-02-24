@@ -5,8 +5,25 @@ import torch.nn as nn
 from mmcv.cnn.bricks.registry import (ATTENTION,
                                       TRANSFORMER_LAYER,
                                       TRANSFORMER_LAYER_SEQUENCE)
-from mmdet3d.ops import bev_pool
-from mmdet3d.ops.bev_pool_v2.bev_pool import bev_pool_v2
+try:
+    from mmdet3d.ops import bev_pool
+except ImportError:
+    def bev_pool(*args, **kwargs):
+        raise NotImplementedError(
+            "bev_pool CUDA op not available. Compile the bundled "
+            "mmdetection3d package (cd mmdetection3d && python setup.py develop)."
+        )
+
+try:
+    from mmdet3d.ops.bev_pool_v2.bev_pool import bev_pool_v2
+except ImportError:
+    def bev_pool_v2(*args, **kwargs):
+        raise NotImplementedError(
+            "bev_pool_v2 CUDA op not available. Compile the bundled "
+            "mmdetection3d package (cd mmdetection3d && python setup.py develop). "
+            "The bev_pool_v2 CUDA kernel must be compiled before LSSTransformV2 "
+            "or BaseTransformV2.voxel_pooling_v2() can be used."
+        )
 from mmcv.runner import force_fp32, auto_fp16
 from torch.cuda.amp.autocast_mode import autocast
 from mmcv.cnn import build_conv_layer
@@ -24,7 +41,7 @@ def gen_dx_bx(xbound, ybound, zbound):
     return dx, bx, nx
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class BaseTransform(BaseModule):
     def __init__(
         self,
@@ -300,7 +317,7 @@ class BaseTransform(BaseModule):
         return x, depth
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class BaseTransformV2(BaseModule):
     def __init__(
         self,
@@ -844,7 +861,7 @@ class DepthNet(nn.Module):
 
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class BEVFormerEncoderDepth(BEVFormerEncoder):
 
     def __init__(self, *args, in_channels=256, out_channels=256, feat_down_sample=32, loss_depth_weight = 3.0,
@@ -1040,7 +1057,7 @@ class BEVFormerEncoderDepth(BEVFormerEncoder):
 
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class LSSTransform(BaseTransform):
     def __init__(
         self,
@@ -1099,12 +1116,83 @@ class LSSTransform(BaseTransform):
 
         x = self.depth_net(x, mlp_input)
         depth = x[:, : self.D].softmax(dim=1)
+
+        # Optional LiDAR-guided linear depth correction.
+        # Set  module._lidar_depth = tensor(B*N, D, fH, fW)  before forward().
+        lidar_depth = getattr(self, '_lidar_depth', None)
+        if lidar_depth is not None:
+            depth = self._apply_lidar_linear_correction(depth, lidar_depth.to(depth))
+
         x = depth.unsqueeze(1) * x[:, self.D : (self.D + self.C)].unsqueeze(2)
 
         x = x.view(B, N, self.C, self.D, fH, fW)
         x = x.permute(0, 1, 3, 4, 5, 2)
         depth = depth.view(B, N, self.D, fH, fW)
         return x, depth
+
+    def _apply_lidar_linear_correction(self, depth, lidar_depth):
+        """Fit per-camera affine correction d_lidar ≈ a·d_net + b from sparse
+        LiDAR observations, then resample the entire depth distribution through
+        d_corrected = a·d + b so the correction propagates to all pixels.
+
+        Args:
+            depth      (B*N, D, fH, fW): network softmax depth distribution.
+            lidar_depth(B*N, D, fH, fW): one-hot LiDAR depth (0 = no coverage).
+        Returns:
+            corrected  (B*N, D, fH, fW): linearly-corrected depth distribution.
+        """
+        d_min, _, d_step = self.dbound
+        D      = self.D
+        device = depth.device
+        dtype  = depth.dtype
+
+        # Bin representative depths — same values used by create_frustum.
+        bin_vals = (torch.arange(D, device=device, dtype=dtype) * d_step + d_min)  # (D,)
+
+        # Expected depth from network and LiDAR one-hot: both (B*N, fH, fW).
+        E_net   = (depth       * bin_vals.view(1, D, 1, 1)).sum(dim=1)
+        E_lidar = (lidar_depth * bin_vals.view(1, D, 1, 1)).sum(dim=1)
+        has_lidar = lidar_depth.sum(dim=1) > 0.5          # (B*N, fH, fW)
+
+        corrected = depth.clone()
+        for i in range(depth.shape[0]):
+            mask = has_lidar[i]                            # (fH, fW)
+            M    = int(mask.sum().item())
+            if M < 10:
+                continue                                    # too few points
+
+            d_pred  = E_net[i][mask]                       # (M,)
+            d_lidar = E_lidar[i][mask]                     # (M,)
+
+            # Fit d_lidar ≈ a·d_pred + b via normal equations.
+            n      = d_pred.new_tensor(float(M))
+            sum_x  = d_pred.sum()
+            sum_y  = d_lidar.sum()
+            sum_xx = (d_pred * d_pred).sum()
+            sum_xy = (d_pred * d_lidar).sum()
+            denom  = n * sum_xx - sum_x * sum_x
+            if denom.abs() < 1e-4:
+                continue                                    # degenerate
+            a = ((n * sum_xy - sum_x * sum_y) / denom).clamp(0.2, 5.0)
+            b = (sum_y - a * sum_x) / n
+
+            # Backward resample: output bin j draws from input depth
+            # d_in = (bin_vals[j] - b) / a → fractional input bin index.
+            src_idx = (bin_vals - b) / a                   # (D,) in depth units
+            src_idx = (src_idx - d_min) / d_step           # fractional bin index
+
+            lo   = src_idx.floor().long().clamp(0, D - 1)
+            hi   = (lo + 1).clamp(0, D - 1)
+            w_hi = (src_idx - src_idx.floor()).clamp(0.0, 1.0)   # (D,)
+            w_lo = 1.0 - w_hi
+
+            cam  = depth[i]                                # (D, fH, fW)
+            resamp = cam[lo] * w_lo[:, None, None] + cam[hi] * w_hi[:, None, None]
+            # Renormalise (mass lost when bins shift out of range).
+            resamp = resamp / resamp.sum(0, keepdim=True).clamp(min=1e-6)
+            corrected[i] = resamp
+
+        return corrected
 
     def forward(self, images, img_metas):
         x, depth = super().forward(images, img_metas)
@@ -1191,7 +1279,7 @@ class LSSTransform(BaseTransform):
         return mlp_input
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class LSSTransformV2(BaseTransformV2):
     def __init__(
         self,

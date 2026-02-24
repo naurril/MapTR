@@ -74,7 +74,7 @@ def denormalize_2d_pts(pts, pc_range):
     return new_pts
 
 
-@HEADS.register_module()
+@HEADS.register_module(force=True)
 class MapTRv2Head(DETRHead):
     """Head of Detr3D.
     Args:
@@ -137,13 +137,15 @@ class MapTRv2Head(DETRHead):
 
         self.with_box_refine = with_box_refine
         self.as_two_stage = as_two_stage
-        self.bev_encoder_type = transformer.encoder.type
+        if isinstance(transformer, dict):
+            self.bev_encoder_type = transformer['encoder']['type']
+        else:
+            self.bev_encoder_type = transformer.encoder.type
         if self.as_two_stage:
             transformer['as_two_stage'] = self.as_two_stage
         if 'code_size' in kwargs:
-            self.code_size = 2 if not z_cfg['pred_z_flag'] else 3
-        else:
-            self.code_size = 2
+            kwargs.pop('code_size')
+        self.code_size = 3 if z_cfg and z_cfg.get('pred_z_flag') else 2
         if code_weights is not None:
             self.code_weights = code_weights
         else:
@@ -170,9 +172,40 @@ class MapTRv2Head(DETRHead):
         self.dir_interval = dir_interval
         self.aux_seg = aux_seg
         self.z_cfg = z_cfg
-        
-        super(MapTRv2Head, self).__init__(
-            *args, transformer=transformer, **kwargs)
+
+        # ── mmdet v2 compat: DETRHead no longer accepts transformer /
+        #    positional_encoding / in_channels / num_query kwargs.
+        #    Build them here and inject via object.__setattr__ before
+        #    super().__init__() so that any super-class attribute checks
+        #    during __init__ still see valid objects.
+        positional_encoding = kwargs.pop('positional_encoding', None)
+        kwargs.pop('in_channels', None)
+        kwargs.pop('num_query', None)
+
+        from mmdet3d.registry import MODELS as _MODELS
+        _transformer = _MODELS.build(transformer)
+        _positional_encoding = None
+        if positional_encoding is not None:
+            from mmcv.cnn.bricks.transformer import build_positional_encoding
+            _positional_encoding = build_positional_encoding(positional_encoding)
+
+        kwargs.setdefault('embed_dims', _transformer.embed_dims)
+
+        object.__setattr__(self, 'transformer', _transformer)
+        if _positional_encoding is not None:
+            object.__setattr__(self, 'positional_encoding', _positional_encoding)
+
+        super(MapTRv2Head, self).__init__(*args, **kwargs)
+
+        # Restore the built objects so later code (e.g. _init_layers) uses them.
+        self.transformer = _transformer
+        if _positional_encoding is not None:
+            self.positional_encoding = _positional_encoding
+
+        # v2 DETRHead no longer creates a PseudoSampler — add it manually.
+        from mmengine.registry import TASK_UTILS
+        self.sampler = TASK_UTILS.build(dict(type='PseudoSampler'))
+
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
         self.loss_pts = build_loss(loss_pts)
